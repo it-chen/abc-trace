@@ -891,14 +891,39 @@
                 pts[lo][1] + (pts[hi][1] - pts[lo][1]) * f];
       }
 
+      /* 把当前字渲染成一张字形遮罩（位置、字号与背景描红字一致），
+         示范时先沿笔顺在离屏画布上涂色，再用遮罩裁掉字形之外的部分：
+         颜色只出现在描红字身上，看起来就是把灰字一笔一笔填满 */
+      function buildGlyphMask(ch, w, h) {
+        var mc = document.createElement("canvas");
+        mc.width = w; mc.height = h;
+        var c = mc.getContext("2d");
+        c.fillStyle = "#000";
+        c.strokeStyle = "#000";
+        c.font = "600 " + Math.round(h * 0.74) + "px Fredoka, sans-serif";
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+        c.lineJoin = "round";
+        /* 描边把字形略微放大一点，容忍画布字与背景字的细微错位，不留白边 */
+        c.lineWidth = Math.max(2, w * 0.012);
+        var x = w / 2, y = h * 0.548;
+        c.fillText(ch, x, y);
+        c.strokeText(ch, x, y);
+        return mc;
+      }
+
       function playDemo() {
         stopDemo();
         var ch = currentChar();
         var strokes = expandChar(ch).map(prepareDemoStroke).filter(function (s) { return s.pts.length; });
         if (!strokes.length) return;
         var w = demoCanvas.width, h = demoCanvas.height;
-        var accent = getComputedStyle(document.documentElement).getPropertyValue("--teal").trim() || "#0e9594";
-        var penW = Math.max(7, w * 0.03);
+        var fill = state.color || "#e5484d"; /* 用孩子当前选的笔色来填描红 */
+        var mask = buildGlyphMask(ch, w, h);
+        var paint = document.createElement("canvas");
+        paint.width = w; paint.height = h;
+        var pctx = paint.getContext("2d");
+        var penW = Math.max(10, w * 0.085); /* 刷子够宽，沿笔画中线走一遍就能把描红涂满 */
         var SPEED = 105; /* 书写速度（单位/秒）：长笔画花的时间长、短笔画短，像真人写字 */
         var GAP = 300, LEAD = 250, HOLD = 700;
         var timeline = [], cursor = LEAD;
@@ -912,23 +937,23 @@
         function ease(t) { return t * t * (3 - 2 * t); } /* 起笔、收笔放慢 */
         function frame(now) {
           var t = now - start;
-          xctx.clearRect(0, 0, w, h);
           if (t > total) { stopDemo(); return; }
-          xctx.globalCompositeOperation = "source-over";
-          xctx.strokeStyle = accent;
-          xctx.fillStyle = accent;
-          xctx.lineWidth = penW;
-          xctx.lineCap = "round";
-          xctx.lineJoin = "round";
+          pctx.clearRect(0, 0, w, h);
+          pctx.globalCompositeOperation = "source-over";
+          pctx.strokeStyle = fill;
+          pctx.fillStyle = fill;
+          pctx.lineWidth = penW;
+          pctx.lineCap = "round";
+          pctx.lineJoin = "round";
           var tip = null;
           timeline.forEach(function (item) {
             var lt = t - item.start;
             if (lt <= 0) return;
             var prep = item.prep;
             if (prep.len === 0) { /* 点（如 i、j 的点）：直接落下 */
-              xctx.beginPath();
-              xctx.arc(prep.pts[0][0] / 100 * w, prep.pts[0][1] / 112 * h, penW / 2, 0, Math.PI * 2);
-              xctx.fill();
+              pctx.beginPath();
+              pctx.arc(prep.pts[0][0] / 100 * w, prep.pts[0][1] / 112 * h, penW / 2, 0, Math.PI * 2);
+              pctx.fill();
               return;
             }
             var frac = Math.min(1, lt / item.dur);
@@ -941,24 +966,30 @@
             var lastP = upto[upto.length - 1];
             if (!lastP || Math.abs(tipPt[0] - lastP[0]) > 0.01 || Math.abs(tipPt[1] - lastP[1]) > 0.01) upto.push(tipPt);
             if (upto.length === 1) {
-              xctx.beginPath();
-              xctx.arc(upto[0][0] / 100 * w, upto[0][1] / 112 * h, penW / 2, 0, Math.PI * 2);
-              xctx.fill();
+              pctx.beginPath();
+              pctx.arc(upto[0][0] / 100 * w, upto[0][1] / 112 * h, penW / 2, 0, Math.PI * 2);
+              pctx.fill();
             } else {
-              xctx.beginPath();
-              xctx.moveTo(upto[0][0] / 100 * w, upto[0][1] / 112 * h);
-              for (var k = 1; k < upto.length; k++) xctx.lineTo(upto[k][0] / 100 * w, upto[k][1] / 112 * h);
-              xctx.stroke();
+              pctx.beginPath();
+              pctx.moveTo(upto[0][0] / 100 * w, upto[0][1] / 112 * h);
+              for (var k = 1; k < upto.length; k++) pctx.lineTo(upto[k][0] / 100 * w, upto[k][1] / 112 * h);
+              pctx.stroke();
             }
             if (frac < 1) tip = tipPt; /* 只在正在写的这一笔上显示笔尖 */
           });
+          /* 用字形遮罩裁剪：只留下落在描红字身上的颜色，字外一点不沾 */
+          pctx.globalCompositeOperation = "destination-in";
+          pctx.drawImage(mask, 0, 0);
+          xctx.clearRect(0, 0, w, h);
+          xctx.globalCompositeOperation = "source-over";
+          xctx.drawImage(paint, 0, 0);
           if (tip) {
             xctx.beginPath();
-            xctx.arc(tip[0] / 100 * w, tip[1] / 112 * h, penW * 0.62, 0, Math.PI * 2);
-            xctx.fillStyle = "#e5484d";
+            xctx.arc(tip[0] / 100 * w, tip[1] / 112 * h, penW * 0.34, 0, Math.PI * 2);
+            xctx.fillStyle = "#ffffff";
             xctx.fill();
-            xctx.lineWidth = 3;
-            xctx.strokeStyle = "#ffffff";
+            xctx.lineWidth = Math.max(3, w * 0.008);
+            xctx.strokeStyle = fill;
             xctx.stroke();
           }
           state.demoTimer = requestAnimationFrame(frame);
